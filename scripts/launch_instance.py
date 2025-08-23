@@ -7,15 +7,13 @@ OFFER_QUERY = os.environ.get("OFFER_QUERY", "gpu_ram>=12")
 IMAGE = os.environ.get("IMAGE", "huggingface/transformers-pytorch-gpu:latest")
 DISK_GB = os.environ.get("DISK_GB", "40")
 
-# Add features for fast instance creation: high internet speed, high CPU, low queue, low setup time
 FAST_FEATURES = [
-    "inet_down>500",      # Download speed > 500 Mbps
-    "inet_up>100",        # Upload speed > 100 Mbps
-    "cpu_cores_effective>=8", # At least 8 effective CPU cores
-    "setup_time<60",      # Setup time less than 60 seconds
-    "queue==0",           # No queue
-    "reliability>0.98",   # High reliability
-    "host_cooldown==0"    # No cooldown
+    "inet_down>500",
+    "inet_up>100",
+    "cpu_ghz>2.4",
+    "cpu_cores_effective>7",
+    "cpu_ram>63",
+    "reliability>0.98"
 ]
 
 def need(cmd):
@@ -26,7 +24,11 @@ def need(cmd):
 
 def run_json(cmd_list):
     out = subprocess.check_output(cmd_list)
-    return json.loads(out)
+    try:
+        return json.loads(out.decode())
+    except Exception:
+        print("Failed to parse JSON from command output:", out.decode(), file=sys.stderr)
+        sys.exit(1)
 
 def run(cmd_list, check=True):
     return subprocess.run(cmd_list, check=check)
@@ -49,18 +51,17 @@ def register_key(pub_key):
 
 def pick_offer():
     print(f"==> Selecting an offer matching: {OFFER_QUERY} and fast features")
-    query = " and ".join([OFFER_QUERY] + FAST_FEATURES)
+    query = " ".join([OFFER_QUERY] + FAST_FEATURES)
     arr = run_json([
-        "vastai", "search", "offers", query, "-d", "-o", "setup_time", "--limit", "5", "--raw"
+        "vastai", "search", "offers", query, "--raw" , "--limit", "5"
     ])
     if not arr:
         print(f"No offer found for query: {query}", file=sys.stderr)
         sys.exit(1)
-    # Pick the offer with the lowest setup_time and highest inet_down
-    arr.sort(key=lambda x: (x.get("setup_time", 9999), -x.get("inet_down", 0), -x.get("cpu_cores_effective", 0)))
+    arr.sort(key=lambda x: (x.get("dph_total", float('inf')), x.get("setup_duration", 9999), -x.get("inet_down", 0), -x.get("cpu_cores_effective", 0)))
     offer_id = arr[0].get("id")
     print(f"    Offer selected: {offer_id}")
-    print(f"    Setup time: {arr[0].get('setup_time')}s, inet_down: {arr[0].get('inet_down')} Mbps, cpu_cores: {arr[0].get('cpu_cores_effective')}")
+    print(f"    Price: ${arr[0].get('dph_total', 'N/A')}/hr, Setup duration: {arr[0].get('setup_duration')}s, inet_down: {arr[0].get('inet_down')} Mbps, cpu_cores: {arr[0].get('cpu_cores_effective')}")
     return str(offer_id)
 
 def create_instance(offer_id):
@@ -70,7 +71,7 @@ def create_instance(offer_id):
         "--image", IMAGE, "--disk", str(DISK_GB), "--raw"
     ])
     try:
-        data = json.loads(out)
+        data = json.loads(out.decode())
     except Exception:
         data = {}
     instance_id = (
